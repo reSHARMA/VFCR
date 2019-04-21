@@ -53,6 +53,8 @@ using ExpressionMap = std::map<StoreInst*, ExpressionSet>;
 using Alias = std::map<Expression*, ExpressionSet>;
 using AliasExpressionMap = std::map<StoreInst*, Alias>;
 using InstructionQueue = std::queue<Instruction*>;
+using InstructionStack = std::stack<Instruction*>;
+using InstructionSet = std::set<Instruction*>;
 
 class VFCRPass : public FunctionPass {
        private:
@@ -63,8 +65,10 @@ class VFCRPass : public FunctionPass {
 	Expression* Origin;
 	Instruction* StartInst;
 	Instruction* EndInst;
-	InstructionQueue DemandWorkList;
-	InstructionQueue AliasWorkList;
+	InstructionStack DemandWorkList;
+	InstructionStack AliasWorkList;
+	InstructionSet DemandWorkListSet;
+	InstructionSet AliasWorkListSet;
        public:
 	static char ID;
 	VFCRPass() : FunctionPass(ID) {}
@@ -110,13 +114,20 @@ class VFCRPass : public FunctionPass {
 					StartInst = getStartInst(&I);
 					EndInst = getEndInst(&I);
 					DemandOut[cast<StoreInst>(EndInst)].insert(Origin);
-					DemandWorkList.push(EndInst);
-					AliasWorkList.push(StartInst);
-					std::stack<Instruction*> callsiteStack;
+					if(DemandWorkListSet.find(EndInst) == DemandWorkListSet.end()){
+						DemandWorkList.push(EndInst);
+						DemandWorkListSet.insert(EndInst);
+					}
+					if(AliasWorkListSet.find(StartInst) == AliasWorkListSet.end()){
+						AliasWorkList.push(StartInst);
+						AliasWorkListSet.insert(StartInst);
+					}
 					while(!(DemandWorkList.empty() && AliasWorkList.empty())){
+						std::stack<Instruction*> demandCallsiteStack;
 						while(!DemandWorkList.empty()){
-							Instruction* Inst = DemandWorkList.front();
+							Instruction* Inst = DemandWorkList.top();
 							DemandWorkList.pop();
+							DemandWorkListSet.erase(Inst);
 							LLVM_DEBUG(dbgs() << ">>>> " << *Inst << "\n"; );
 							if(CallInst* callInst = dyn_cast<CallInst>(Inst)){
 								LLVM_DEBUG(dbgs() << "Call encountered " << *callInst << "\n";);
@@ -136,9 +147,9 @@ class VFCRPass : public FunctionPass {
 										} else {
 											LLVM_DEBUG(dbgs() << "You ended upon an empty function :( \n";);
 										}
-										callsiteStack.push(Inst);
-										LLVM_DEBUG(dbgs() << "The correct function is arxiv in stack, and you are depth " << 
-												callsiteStack.size() << "\n";);
+										demandCallsiteStack.push(Inst);
+										LLVM_DEBUG(dbgs() << "The current function is arxived in stack, and you are depth " << 
+												demandCallsiteStack.size() << "\n";);
 										Inst = callEndInst;
 									}
 								} else {
@@ -150,9 +161,12 @@ class VFCRPass : public FunctionPass {
 									ExpressionSet OldDemandIn = DemandIn[storeInst];
 									findDemand(storeInst);
 									if(OldDemandIn == DemandIn[storeInst]){
-										// TODO: DOUBT When to stop it :( Just a bit confused
-										// I guess it is not for each instruction
-//										continue;
+										// FAQ : When to stop it?
+										// here :p
+										while(!demandCallsiteStack.empty()){
+											demandCallsiteStack.pop();
+										}
+										continue;
 									}
 								}	
 							}
@@ -162,29 +176,100 @@ class VFCRPass : public FunctionPass {
 							}
 							if(PreInst == nullptr){
 								LLVM_DEBUG(dbgs() << "You hit the end of some function \n");
-								if(!callsiteStack.empty()){
-									LLVM_DEBUG(dbgs() << "But don't worry stack still have something \n";);
-									PreInst = callsiteStack.top() -> getPrevNonDebugInstruction();
-									callsiteStack.pop();
+								if(!demandCallsiteStack.empty()){
+									LLVM_DEBUG(dbgs() << "But don't worry stack still have " << demandCallsiteStack.size() << " \n";);
+									PreInst = demandCallsiteStack.top() -> getPrevNonDebugInstruction();
+									demandCallsiteStack.pop();
 								} else {
 									LLVM_DEBUG(dbgs() << "Stack is also empty :( \n";);
 								}
 							}
 							if(PreInst != nullptr){
-								DemandWorkList.push(PreInst);
-								AliasWorkList.push(PreInst);
+								if(DemandWorkListSet.find(PreInst) == DemandWorkListSet.end()){
+									DemandWorkList.push(PreInst);
+									DemandWorkListSet.insert(PreInst);
+								}
+								if(AliasWorkListSet.find(PreInst) == AliasWorkListSet.end()){
+									AliasWorkList.push(PreInst);
+									AliasWorkListSet.insert(PreInst);
+								}
 							}
 						}
+						std::stack<Instruction*> aliasCallsiteStack;
 						while(!AliasWorkList.empty()){
-							Instruction* Inst = AliasWorkList.front();
+							LLVM_DEBUG(dbgs() << "Size of alias worklist is " << AliasWorkList.size() << "\n";);
+							Instruction* Inst = AliasWorkList.top();
 							AliasWorkList.pop();
-							if(StoreInst* storeInst = dyn_cast<StoreInst>(Inst)){
-								Alias OldAliasOut = AliasOut[storeInst];
-								findAlias(storeInst);
-								if(OldAliasOut != AliasOut[storeInst]){
-									Instruction* NextInst = storeInst -> getNextNonDebugInstruction();
+							AliasWorkListSet.erase(Inst);
+							LLVM_DEBUG(dbgs() << ">>>> " << *Inst << "\n"; );
+							if(CallInst* callInst = dyn_cast<CallInst>(Inst)){
+								LLVM_DEBUG(dbgs() << "Call encountered " << *callInst << "\n";);
+								Function* calledFunction = callInst -> getCalledFunction();
+								// TODO DOUBT: if it is an indirect call it will return null :(
+								// TODO DOUBT: How to match function arguments passed as reference
+								if(calledFunction){
+									if(calledFunction -> isIntrinsic()){
+										LLVM_DEBUG(dbgs() << "Gracefully ^_^ ignoring llvm intrinsic function \n");
+									} else {
+										LLVM_DEBUG(dbgs() << "Direct Call for function "<< *calledFunction << "\n";);
+										inst_iterator callBeginInstIter = inst_begin(calledFunction);
+										Instruction* callEndInst = &*callBeginInstIter;
+										if(callEndInst){
+											LLVM_DEBUG(dbgs() << "New instruction added " << *callEndInst << "\n");
+										} else {
+											LLVM_DEBUG(dbgs() << "You ended upon an empty function :( \n";);
+										}
+										aliasCallsiteStack.push(Inst);
+										LLVM_DEBUG(dbgs() << "The correct function is arxiv in stack, and you are depth " << 
+												aliasCallsiteStack.size() << "\n";);
+										Inst = callEndInst;
+									}
+								} else {
+									LLVM_DEBUG(dbgs() << "Indirect call, can't do much :(\n";);
+								}
+							} 
+							if(Inst){
+								if(StoreInst* storeInst = dyn_cast<StoreInst>(Inst)){
+									Alias OldAliasOut = AliasOut[storeInst];
+									findAlias(storeInst);
+									LLVM_DEBUG(dbgs() << "Old Alias Out \n");
+									printAliasSet(OldAliasOut);
+									LLVM_DEBUG(dbgs() << "Alias Out \n");
+									printAliasSet(AliasOut[storeInst]);
+									LLVM_DEBUG(dbgs() << "DO they look equal? ";);
+									if(OldAliasOut == AliasOut[storeInst]){
+										LLVM_DEBUG(dbgs() << "YES \n";);
+										while(!aliasCallsiteStack.empty()){
+											aliasCallsiteStack.pop();
+										}
+										continue;
+									}
+									LLVM_DEBUG(dbgs() << "NO \n ";);
+								}
+							}
+							Instruction* NextInst = nullptr;
+							if(Inst){
+								NextInst = Inst -> getNextNonDebugInstruction();
+							}
+							if(NextInst == nullptr){
+								LLVM_DEBUG(dbgs() << "You hit the end of some function \n");
+								if(!aliasCallsiteStack.empty()){
+									LLVM_DEBUG(dbgs() << "But don't worry stack still have something \n";);
+									NextInst = aliasCallsiteStack.top() -> getNextNonDebugInstruction();
+									aliasCallsiteStack.pop();
+								} else {
+									LLVM_DEBUG(dbgs() << "Stack is also empty :( \n";);
+								}
+							}
+							if(NextInst != nullptr){
+								LLVM_DEBUG(dbgs() << "Adding " << *NextInst << " into the worklist \n";);
+								if(DemandWorkListSet.find(NextInst) == DemandWorkListSet.end()){
+									DemandWorkList.push(NextInst);
+									DemandWorkListSet.insert(NextInst);
+								}
+								if(AliasWorkListSet.find(NextInst) == AliasWorkListSet.end()){
 									AliasWorkList.push(NextInst);
-									AliasWorkList.push(NextInst);
+									AliasWorkListSet.insert(NextInst);
 								}
 							}
 						}
@@ -589,7 +674,6 @@ ExpressionSet VFCRPass::RightDemandGen(Expression* LHSExp){
 }
 
 ExpressionSet VFCRPass::LeftDemandGen(Expression* RHSExp,StoreInst* Inst){
-	printExpTrace(RHSExp);	
 	ExpressionSet expressions;
 	if(canExpressionPoint(RHSExp)){
 		LLVM_DEBUG(dbgs() << "Expression if of type *x or x -> f \n";);
