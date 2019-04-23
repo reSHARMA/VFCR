@@ -117,10 +117,12 @@ class VFCRPass : public FunctionPass {
 					DemandOut[cast<StoreInst>(EndInst)].insert(Origin);
 					if(DemandWorkListSet.find(EndInst) == DemandWorkListSet.end()){
 						DemandWorkList.push(EndInst);
+						LLVM_DEBUG(dbgs() << "Adding " << *EndInst << " to the demand list \n";);
 						DemandWorkListSet.insert(EndInst);
 					}
 					if(AliasWorkListSet.find(StartInst) == AliasWorkListSet.end()){
 						AliasWorkList.push(StartInst);
+						LLVM_DEBUG(dbgs() << "Adding " << *StartInst << " to the alias list \n";);
 						AliasWorkListSet.insert(StartInst);
 					}
 					while(!(DemandWorkList.empty() && AliasWorkList.empty())){
@@ -131,7 +133,8 @@ class VFCRPass : public FunctionPass {
 							DemandWorkList.pop();
 							DemandWorkListSet.erase(Inst);
 							LLVM_DEBUG(dbgs() << ">>>> " << *Inst << "\n"; );
-							if(CallInst* callInst = dyn_cast<CallInst>(Inst)){
+							if(false /* CallInst* callInst = dyn_cast<CallInst>(Inst) */){
+								CallInst* callInst;
 								LLVM_DEBUG(dbgs() << "Call encountered " << *callInst << "\n";);
 								Function* calledFunction = callInst -> getCalledFunction();
 								// TODO DOUBT: if it is an indirect call it will return null :(
@@ -141,6 +144,7 @@ class VFCRPass : public FunctionPass {
 										LLVM_DEBUG(dbgs() << "Gracefully ^_^ ignoring llvm intrinsic function \n");
 									} else {
 										LLVM_DEBUG(dbgs() << "Direct Call for function "<< *calledFunction << "\n";);
+										LLVM_DEBUG(dbgs() << "~~~~~~ Damage Control ############# \n";);
 										inst_iterator callEndInstIter = inst_end(calledFunction);
 										callEndInstIter--;
 										Instruction* callEndInst = &*callEndInstIter;
@@ -149,10 +153,12 @@ class VFCRPass : public FunctionPass {
 										Instruction* tempPreInst = Inst -> getPrevNonDebugInstruction();
 										if(tempPreInst){
 											FuncBeginInstToCallSitePrevInst[callStartInst] = tempPreInst;
+											LLVM_DEBUG(dbgs() << *callStartInst << " -> " << *tempPreInst << "\n";);
 										}
 										Instruction* tempNextInst = Inst -> getNextNonDebugInstruction();
 										if(tempNextInst){
 											FuncEndInstToCallSitePrevInst[callEndInst] = tempNextInst;
+											LLVM_DEBUG(dbgs() << *callEndInst << " -> " << *tempNextInst << "\n";);
 										}
 										Inst = callEndInst;
 									}
@@ -183,11 +189,13 @@ class VFCRPass : public FunctionPass {
 							if(PreInst != nullptr){
 								if(DemandWorkListSet.find(PreInst) == DemandWorkListSet.end()){
 									DemandWorkList.push(PreInst);
+									LLVM_DEBUG(dbgs() << "Adding " << *PreInst << " to the demand list \n";);
 									DemandWorkListSet.insert(PreInst);
 								}
 								if(AliasWorkListSet.find(PreInst) == AliasWorkListSet.end()){
-									if(isa<StoreInst>(PreInst)){
+									if(true || isa<StoreInst>(PreInst)){
 										AliasWorkList.push(PreInst);
+										LLVM_DEBUG(dbgs() << "Adding " << *PreInst << " to the alias list \n";);
 										AliasWorkListSet.insert(PreInst);
 									}
 								}
@@ -200,7 +208,8 @@ class VFCRPass : public FunctionPass {
 							AliasWorkList.pop();
 							AliasWorkListSet.erase(Inst);
 							LLVM_DEBUG(dbgs() << ">>>> " << *Inst << "\n"; );
-							if(CallInst* callInst = dyn_cast<CallInst>(Inst)){
+							if(false /* CallInst* callInst = dyn_cast<CallInst>(Inst) */){
+								CallInst* callInst;
 								LLVM_DEBUG(dbgs() << "Call encountered " << *callInst << "\n";);
 								Function* calledFunction = callInst -> getCalledFunction();
 								// TODO DOUBT: if it is an indirect call it will return null :(
@@ -222,6 +231,7 @@ class VFCRPass : public FunctionPass {
 										Instruction* tempNextInst = Inst -> getNextNonDebugInstruction();
 										if(tempNextInst){
 											FuncEndInstToCallSitePrevInst[callEndInst] = tempNextInst;
+											LLVM_DEBUG(dbgs() << "add " << *tempNextInst << " " << *callEndInst << "\n";);
 										}
 										Inst = callStartInst;
 									}
@@ -257,13 +267,15 @@ class VFCRPass : public FunctionPass {
 							if(NextInst != nullptr){
 								LLVM_DEBUG(dbgs() << "Adding " << *NextInst << " into the worklist \n";);
 								if(DemandWorkListSet.find(NextInst) == DemandWorkListSet.end()){
-									if(isa<StoreInst>(NextInst)){
+									if(true || isa<StoreInst>(NextInst)){
 										DemandWorkList.push(NextInst);
+										LLVM_DEBUG(dbgs() << "Adding " << *NextInst << " to the demand list \n";);
 										DemandWorkListSet.insert(NextInst);
 									}
 								}
 								if(AliasWorkListSet.find(NextInst) == AliasWorkListSet.end()){
 									AliasWorkList.push(NextInst);
+									LLVM_DEBUG(dbgs() << "Adding " << *NextInst << " to the alias list \n";);
 									AliasWorkListSet.insert(NextInst);
 								}
 							}
@@ -456,13 +468,17 @@ void VFCRPass::findAlias(StoreInst* storeInst){
 	Expression* LHSExp = metaMap[storeInst] -> LHS;
 	Expression* RHSExp = metaMap[storeInst] -> RHS;
 	// calculate ln(bar) and rn(bar)
-	LHSExpressions.insert(LHSExp);
 	if(canExpressionPoint(LHSExp)){
 		absName(LHSExp, LHSExpressions, storeInst);
 	}
-	RHSExpressions.insert(RHSExp);
 	if(canExpressionPoint(RHSExp)){
 		absName(RHSExp, RHSExpressions, storeInst);
+	}
+	if(LHSExpressions.empty()){
+		LHSExpressions.insert(LHSExp);
+	}
+	if(RHSExpressions.empty()){
+		RHSExpressions.insert(RHSExp);
 	}
 	LLVM_DEBUG(dbgs() << "Values in LBar set \n";);
 	printSet(LHSExpressions);	
@@ -481,7 +497,7 @@ void VFCRPass::findAlias(StoreInst* storeInst){
 			// TODO find a good name
 			bool toughCondition = false;
 			for(auto DemandExp : DemandOut[storeInst]){
-				if(AliasIn[storeInst].find(DemandExp) != AliasIn[storeInst].end()){
+				if(AliasIn.find(storeInst) != AliasIn.end() && AliasIn[storeInst].find(DemandExp) != AliasIn[storeInst].end()){
 					for(auto AliasExp : AliasIn[storeInst][DemandExp]){
 						if(AliasExp == DemandExp){
 							toughCondition = true;
@@ -509,7 +525,9 @@ void VFCRPass::findAlias(StoreInst* storeInst){
 	printAliasSet(AliasGen);
 	LLVM_DEBUG(dbgs() << "Alias TEST \n";);
 	printAliasIn(storeInst);
-	AliasOut[storeInst] = AliasIn[storeInst];
+	if(AliasIn.find(storeInst) != AliasIn.end()){
+		AliasOut[storeInst] = AliasIn[storeInst];
+	}
 	if(LHSExp -> symbol == simple && RHSExp -> symbol == address){
 		AliasOut[storeInst].erase(LHSExp);
 	}
@@ -565,9 +583,11 @@ void  VFCRPass::analyse(Instruction& I){
 		if(StoreInst* storeInst = dyn_cast<StoreInst>(StartInst)){
 			if(lastStoreInst){
 			//	AliasIn[storeInst].insert(AliasIn[lastStoreInst].begin(), AliasIn[lastStoreInst].end());
-				for(auto AliasMap : AliasIn[storeInst]){
-					AliasIn[storeInst][AliasMap.first].insert(AliasIn[lastStoreInst][AliasMap.first].begin(), 
-						AliasIn[lastStoreInst][AliasMap.first].end());
+				if(AliasIn.find(storeInst) != AliasIn.end()){
+					for(auto AliasMap : AliasIn[storeInst]){
+						AliasIn[storeInst][AliasMap.first].insert(AliasIn[lastStoreInst][AliasMap.first].begin(), 
+							AliasIn[lastStoreInst][AliasMap.first].end());
+					}
 				}
 			}
 			findAlias(storeInst);
@@ -629,6 +649,9 @@ void VFCRPass::printAliasIn(StoreInst* storeInst){
 }
 
 bool VFCRPass::isAliasEqual(Alias A, Alias B){
+	if(A.empty() && B.empty()){
+		return true;
+	}
 	for(auto alias1 : A){
 		for(auto alias2 : B){
 			if(isExpressionEqual(alias1.first, alias2.first)){
@@ -779,30 +802,35 @@ bool VFCRPass::canExpressionPoint(Expression* Exp){
 void VFCRPass::absName(Expression* Exp, ExpressionSet& expressions, StoreInst* StoreInstruction){
 	SymbolType ExpSymbol;
 	ExpSymbol = Exp -> symbol;
-	for(Expression* AliasExpression : AliasIn[StoreInstruction][Exp]){
-		if(!AliasExpression){
-			continue;
-		}
-		SymbolType AliasExpSymbol;
-		AliasExpSymbol = AliasExpression -> symbol;
-		Expression *AliasExp = nullptr;
-		if(ExpSymbol == pointer){
-			AliasExp = new Expression(AliasExpression);
-			AliasExp -> base = Exp -> base;
-			AliasExp -> type = Exp -> type;
-			AliasExp -> symbol = simple;
-		} else if(ExpSymbol == arrow){
-			AliasExp = new Expression(AliasExpression);
-			AliasExp -> base = Exp -> base;
-			AliasExp -> type = Exp -> type;
-			AliasExp -> symbol = dot;
-		}	
-		if(AliasExp){
-			expressions.insert(AliasExp);
+	if(AliasIn.find(StoreInstruction) != AliasIn.end() && AliasIn[StoreInstruction].find(Exp) != AliasIn[StoreInstruction].end()){
+		for(Expression* AliasExpression : AliasIn[StoreInstruction][Exp]){
+			if(!AliasExpression){
+				continue;
+			}
+			SymbolType AliasExpSymbol;
+			AliasExpSymbol = AliasExpression -> symbol;
+			Expression *AliasExp = nullptr;
+			if(ExpSymbol == pointer){
+				AliasExp = new Expression(AliasExpression);
+				AliasExp -> base = Exp -> base;
+				AliasExp -> type = Exp -> type;
+				AliasExp -> symbol = simple;
+			} else if(ExpSymbol == arrow){
+				AliasExp = new Expression(AliasExpression);
+				AliasExp -> base = Exp -> base;
+				AliasExp -> type = Exp -> type;
+				AliasExp -> symbol = dot;
+			}	
+			if(AliasExp){
+				expressions.insert(AliasExp);
+			} else {
+				expressions.insert(Exp);
+			}
 		}
 	}
 	return;
 }
+
 void VFCRPass::print(Expression* L) {
 	if(L == nullptr){
 		return;
