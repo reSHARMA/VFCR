@@ -38,7 +38,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "LLVMIR++.h"
+#include "/home/reshabh/LLVMIRCPP/LLVM-IR-Plus-Plus/include/LLVMIR++.h"
 
 using namespace llvm;
 
@@ -59,9 +59,11 @@ using InstructionSet = std::set<Instruction*>;
 class VFCRPass : public FunctionPass {
        private:
  	InstMetaMap metaMap; 
+	CFG*	grcfg;
 	ExpressionMap DemandIn, DemandOut;
 	AliasExpressionMap AliasIn, AliasOut;
 	inst_iterator startInstIterator;
+	inst_iterator endInstIterator;
 	Expression* Origin;
 	Instruction* StartInst;
 	Instruction* EndInst;
@@ -99,8 +101,11 @@ class VFCRPass : public FunctionPass {
 	bool isAliasEqual(Alias, Alias);
 	bool runOnFunction(Function& F) override {
 		startInstIterator = inst_begin(F);
+		endInstIterator = inst_end(F);
+		endInstIterator--;
 		// Iterate over basicblocks
 		metaMap = getAnalysis<LLVMIRPlusPlusPass>().getIRPlusPlus();
+		grcfg  = getAnalysis<LLVMIRPlusPlusPass>().getCFG();
 		for (BasicBlock& BB : F) {
 			// Iterate over Instructions
 			for (Instruction& I : BB) {
@@ -112,15 +117,23 @@ class VFCRPass : public FunctionPass {
 //					analyse(I);
 					LLVM_DEBUG(dbgs() << "#######################################################\n\n\n";);
 					Origin = getOrigin(&I);		
-					StartInst = getStartInst(&I);
-					EndInst = getEndInst(&I);
+					Instruction* FunctionEndInst = &*endInstIterator;
+					while(!isa<StoreInst>(FunctionEndInst)){
+						FunctionEndInst = FunctionEndInst -> getPrevNonDebugInstruction();
+					}
+					EndInst = FunctionEndInst;
+					Instruction* FunctionStartInst = &*startInstIterator;
+					while(!isa<StoreInst>(FunctionStartInst)){
+						FunctionStartInst = FunctionStartInst -> getNextNonDebugInstruction();
+					}
+					StartInst = FunctionStartInst;
 					DemandOut[cast<StoreInst>(EndInst)].insert(Origin);
-					if(DemandWorkListSet.find(EndInst) == DemandWorkListSet.end()){
+					if(EndInst && DemandWorkListSet.find(EndInst) == DemandWorkListSet.end()){
 						DemandWorkList.push(EndInst);
 						LLVM_DEBUG(dbgs() << "Adding " << *EndInst << " to the demand list \n";);
 						DemandWorkListSet.insert(EndInst);
 					}
-					if(AliasWorkListSet.find(StartInst) == AliasWorkListSet.end()){
+					if(StartInst && AliasWorkListSet.find(StartInst) == AliasWorkListSet.end()){
 						AliasWorkList.push(StartInst);
 						LLVM_DEBUG(dbgs() << "Adding " << *StartInst << " to the alias list \n";);
 						AliasWorkListSet.insert(StartInst);
@@ -340,9 +353,7 @@ Instruction* VFCRPass::getStartInst(Instruction* I){
 }
 
 Instruction* VFCRPass::getEndInst(Instruction* I){
-	Value* v = I -> getOperand(0);
-	LoadInst* inst = dyn_cast<LoadInst>(v);
-	Instruction*  EndInst = dyn_cast<Instruction>(v);
+	Instruction*  EndInst = dyn_cast<Instruction>(I);
 	// FAQ: Do I need to start from the top of function, probably yes as there
 	// might be some call?
 	// NO: We need this, demand is stored against the store instruction, so we
