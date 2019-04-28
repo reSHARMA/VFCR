@@ -137,7 +137,19 @@ class VFCRPass : public ModulePass {
 					DemandWorkList.pop_back();
 					ExpressionSet OldDemandIn = DemandIn[node];
 					// Calc stuff
-					findDemand(node);
+					if(node -> abstractedInto == call){
+						if(analysis == intraprocedural){
+							DemandOut[node] = DemandIn[node];
+						} else if(analysis == interprocedural && node -> callType == direct){
+							Node* callEndNode = GRCfg[node -> Func] -> getEndNode();
+							if(callEndNode){
+								DemandWorkList.push_back(callEndNode);
+								DemandOut[callEndNode] = DemandOut[node];
+							}
+						}
+					} else if(node -> abstractedInto == update){
+						findDemand(node);
+					}
 					if(OldDemandIn != DemandIn[node]){
 						for(Node* s : node -> getPred()){
 							LLVM_DEBUG(dbgs() << "Add ";);
@@ -153,8 +165,23 @@ class VFCRPass : public ModulePass {
 					Node* node = AliasWorkList.back();
 					AliasWorkList.pop_back();
 					Alias OldAliasOut = AliasOut[node];
+					if(!node){
+						continue;
+					}
 					// Calc stuff
-					findAlias(node);
+					if(node -> abstractedInto == call){
+						if(analysis == intraprocedural){
+							AliasIn[node] = AliasOut[node];
+						} else if(analysis == interprocedural && node -> callType == direct){
+							Node* callStartNode = GRCfg[node -> Func] -> getStartNode();
+							if(callStartNode){
+								AliasWorkList.push_back(callStartNode);
+								AliasIn[callStartNode] = AliasIn[node];
+							}
+						}
+					} else if(node -> abstractedInto == update){
+						findAlias(node);
+					}
 					if(OldAliasOut != AliasOut[node]){
 						for(Node* s : node -> getSucc()){
 							LLVM_DEBUG(dbgs() << "Add ";);
@@ -177,102 +204,92 @@ class VFCRPass : public ModulePass {
 };
 
 void VFCRPass::findDemand(Node* node){
-	if(node -> abstractedInto == call){
-		if(analysis == intraprocedural){
-			DemandOut[node] = DemandIn[node];
-			AliasIn[node] = AliasOut[node];
-		} else if(analysis == interprocedural){
-		
-		}	
-	} else if(node -> abstractedInto == update){	
-	 	LLVM_DEBUG(dbgs() << "Working on node " ;);
-		print(node);
+ 	LLVM_DEBUG(dbgs() << "Working on node " ;);
+	print(node);
 
-		// Meet of all successors
-		for(Node* s : node -> getSucc()){
-			for(Expression* Exp : DemandIn[s]){
-				DemandOut[node].insert(Exp);
-			}
+	// Meet of all successors
+	for(Node* s : node -> getSucc()){
+		for(Expression* Exp : DemandIn[s]){
+			DemandOut[node].insert(Exp);
 		}
-		
-		Expression* LHSExp = node -> LHS;
-		Expression* RHSExp = node -> RHS;
-
-		LLVM_DEBUG(dbgs() << "Value of LHS \n";);
-		print(LHSExp);
-		LLVM_DEBUG(dbgs() << "\n Value of RHS \n";);
-		print(RHSExp);
-		LLVM_DEBUG(dbgs() << "\n";);
-
-		ExpressionSet LHSExpressions;
-		ExpressionSet RHSExpressions;
-
-		absName(LHSExp, LHSExpressions, node);
-		absName(RHSExp, RHSExpressions, node);
-
-		LLVM_DEBUG(dbgs() << "Values in LBar set \n";);
-		printSet(LHSExpressions);
-		LLVM_DEBUG(dbgs() << "Values in RBar set \n";);
-		printSet(RHSExpressions);
-
-		// calculate demand gen
-		bool LBarInDemandOut = expressionSetInDemandOut(LHSExpressions, node);		
-		bool RBarInDemandOut = expressionSetInDemandOut(RHSExpressions, node);
-
-		ExpressionSet LDemandGen;
-		ExpressionSet RDemandGen;
-		if(LBarInDemandOut && RBarInDemandOut){
-			LLVM_DEBUG(dbgs() << "LBar and RBar both are in demand out \n" ;);
-			LDemandGen = LeftDemandGen(RHSExp, node);
-			RDemandGen = RightDemandGen(LHSExp);
-		} else if(LBarInDemandOut){
-			LLVM_DEBUG(dbgs() << "Only LBar is in demand out \n" ;);
-			LLVM_DEBUG(dbgs() << "Running LDGen over RHSExp \n" ;);
-			LDemandGen = LeftDemandGen(RHSExp, node);	
-		} else if(RBarInDemandOut){
-			LLVM_DEBUG(dbgs() << "Only RBar is in demand out \n" ;);
-			RDemandGen = RightDemandGen(LHSExp);	
-		}
-
-		ExpressionSet DemandGen;
-		LLVM_DEBUG(dbgs() << "Value in LDGen: \n" ;);
-		for(auto Exp : LDemandGen){
-			print(Exp);
-			LLVM_DEBUG(dbgs() << "\n" ;);
-			DemandGen.insert(Exp);
-		}
-		for(auto Exp : RDemandGen){
-			LLVM_DEBUG(dbgs() << "Value in RDGen: \n" ;);
-			print(Exp);
-			LLVM_DEBUG(dbgs() << "\n" ;);
-			DemandGen.insert(Exp);
-		}
-
-		DemandIn[node] = DemandOut[node];
-		if(LHSExp -> symbol == simple){
-			// TODO PLEASE optimize this
-			ExpressionSet tempDemand;
-			for(Expression* tempExp : DemandIn[node]){
-				if(!isExpressionEqual(tempExp, LHSExp)){
-					tempDemand.insert(tempExp);
-				}
-			}
-			DemandIn[node] = tempDemand;
-			LLVM_DEBUG(dbgs() << "Value in Demand kill: \n" ;);
-			print(LHSExp);
-			LLVM_DEBUG(dbgs() << "\n" ;);
-		}
-		for(auto Exp : DemandGen){
-			if(!isAlreadyInSet(DemandIn[node], Exp)){
-				DemandIn[node].insert(Exp);		
-			}
-		}
-		LLVM_DEBUG(dbgs() << "DemandIn: \n" ;);
-		printSet(DemandIn[node]);
-		LLVM_DEBUG(dbgs() << "DemandOut: \n" ;);
-		printSet(DemandOut[node]);
-
 	}
+	
+	Expression* LHSExp = node -> LHS;
+	Expression* RHSExp = node -> RHS;
+
+	LLVM_DEBUG(dbgs() << "Value of LHS \n";);
+	print(LHSExp);
+	LLVM_DEBUG(dbgs() << "\n Value of RHS \n";);
+	print(RHSExp);
+	LLVM_DEBUG(dbgs() << "\n";);
+
+	ExpressionSet LHSExpressions;
+	ExpressionSet RHSExpressions;
+
+	absName(LHSExp, LHSExpressions, node);
+	absName(RHSExp, RHSExpressions, node);
+
+	LLVM_DEBUG(dbgs() << "Values in LBar set \n";);
+	printSet(LHSExpressions);
+	LLVM_DEBUG(dbgs() << "Values in RBar set \n";);
+	printSet(RHSExpressions);
+
+	// calculate demand gen
+	bool LBarInDemandOut = expressionSetInDemandOut(LHSExpressions, node);		
+	bool RBarInDemandOut = expressionSetInDemandOut(RHSExpressions, node);
+
+	ExpressionSet LDemandGen;
+	ExpressionSet RDemandGen;
+	if(LBarInDemandOut && RBarInDemandOut){
+		LLVM_DEBUG(dbgs() << "LBar and RBar both are in demand out \n" ;);
+		LDemandGen = LeftDemandGen(RHSExp, node);
+		RDemandGen = RightDemandGen(LHSExp);
+	} else if(LBarInDemandOut){
+		LLVM_DEBUG(dbgs() << "Only LBar is in demand out \n" ;);
+		LLVM_DEBUG(dbgs() << "Running LDGen over RHSExp \n" ;);
+		LDemandGen = LeftDemandGen(RHSExp, node);	
+	} else if(RBarInDemandOut){
+		LLVM_DEBUG(dbgs() << "Only RBar is in demand out \n" ;);
+		RDemandGen = RightDemandGen(LHSExp);	
+	}
+
+	ExpressionSet DemandGen;
+	LLVM_DEBUG(dbgs() << "Value in LDGen: \n" ;);
+	for(auto Exp : LDemandGen){
+		print(Exp);
+		LLVM_DEBUG(dbgs() << "\n" ;);
+		DemandGen.insert(Exp);
+	}
+	for(auto Exp : RDemandGen){
+		LLVM_DEBUG(dbgs() << "Value in RDGen: \n" ;);
+		print(Exp);
+		LLVM_DEBUG(dbgs() << "\n" ;);
+		DemandGen.insert(Exp);
+	}
+
+	DemandIn[node] = DemandOut[node];
+	if(LHSExp -> symbol == simple){
+		// TODO PLEASE optimize this
+		ExpressionSet tempDemand;
+		for(Expression* tempExp : DemandIn[node]){
+			if(!isExpressionEqual(tempExp, LHSExp)){
+				tempDemand.insert(tempExp);
+			}
+		}
+		DemandIn[node] = tempDemand;
+		LLVM_DEBUG(dbgs() << "Value in Demand kill: \n" ;);
+		print(LHSExp);
+		LLVM_DEBUG(dbgs() << "\n" ;);
+	}
+	for(auto Exp : DemandGen){
+		if(!isAlreadyInSet(DemandIn[node], Exp)){
+			DemandIn[node].insert(Exp);		
+		}
+	}
+	LLVM_DEBUG(dbgs() << "DemandIn: \n" ;);
+	printSet(DemandIn[node]);
+	LLVM_DEBUG(dbgs() << "DemandOut: \n" ;);
+	printSet(DemandOut[node]);
 }
 
 void VFCRPass::absName(Expression* Exp, ExpressionSet& expressions, Node* node){
@@ -394,8 +411,10 @@ bool VFCRPass::canExpressionPoint(Expression* Exp){
 }
 
 void VFCRPass::findAlias(Node* node){
-	LLVM_DEBUG(dbgs() << "----------------------------------------------\n" ;);
 	Alias AliasGen;
+	if(!node){
+		return;
+	}
 	LLVM_DEBUG(dbgs() << "Running for instruction ";);
 	print(node);
 	// TODO: take print to llvmir++
